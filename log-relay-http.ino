@@ -19,7 +19,7 @@ const char *PATH = "/monitor/logs";
 void http_post(const char *body) {
     if (client.connect(SERVER, 80)) {
         Serial.println("Connected, sending:");
-        // Serial.println(body);
+
         client.print("POST ");
         client.print(PATH);
         client.println(" HTTP/1.1");
@@ -49,7 +49,7 @@ void http_post(const char *body) {
 
 void setup() {
     Serial.begin(115200);
-    Serial1.begin(115200);
+    Serial1.begin(9600);
 
     while (millis() < 1000 * 10) {
         if (Serial) {
@@ -93,6 +93,7 @@ void setup() {
 }
 
 const uint32_t LOGBUFFER_SIZE = 4096;
+const uint32_t LOGBUFFER_IDLE_DELAY = 2000;
 
 typedef struct log_buffer_t {
     char buffer[LOGBUFFER_SIZE];
@@ -103,11 +104,66 @@ void logbuffer_create(log_buffer_t *buffer) {
     buffer->position = 0;
 }
 
+char *strrchr(char *src, char needle) {
+    char *looking = src;
+    char *found = nullptr;
+
+    while (*looking != 0) {
+        if (*looking == needle) {
+            found = looking;
+        }
+        looking++;
+    }
+
+    return found;
+}
+
 void logbuffer_flush(log_buffer_t *buffer) {
     if (buffer->position > 0) {
-        buffer->buffer[buffer->position + 1] = 0;
-        http_post(buffer->buffer);
-        buffer->position = 0;
+        buffer->buffer[buffer->position] = 0;
+        char *lastChar = strrchr(buffer->buffer, '\n');
+        if (lastChar == nullptr) {
+            lastChar = strrchr(buffer->buffer, '\r');
+        }
+        if (lastChar != nullptr) {
+            size_t position = lastChar - buffer->buffer;
+
+            // Post up the final full line to the server.
+            buffer->buffer[position] = 0;
+            http_post(buffer->buffer);
+
+            // Terminate the remainder...
+            char *ptr = buffer->buffer;
+            char *tail = lastChar + 1;
+            for (size_t i = position; i < buffer->position; ++i) {
+                if (*tail != 0) {
+                    *ptr++ = *tail++;
+                }
+            }
+
+            size_t old = buffer->position;
+            buffer->position = ptr - buffer->buffer;
+            /*
+            Serial.println("Done: ");
+            Serial.println(old);
+            Serial.println(buffer->position);
+            Serial.println(position);
+            Serial.print("'");
+            Serial.print(buffer->buffer);
+            Serial.print("'");
+            Serial.println();
+            */
+        }
+        else {
+            /*
+            Serial.println("No newline: ");
+            Serial.println(buffer->position);
+            Serial.print("'");
+            Serial.print(buffer->buffer);
+            Serial.print("'");
+            Serial.println();
+            */
+        }
     }
 }
 
@@ -126,15 +182,18 @@ void loop() {
     uint32_t lastActivity = millis();
 
     while (true) {
-        while (Serial1.available()) {
-            char c = Serial1.read();
+        // Stream *stream = Serial ? &Serial : (Stream *)&Serial1;
+        Stream *stream = (Stream *)&Serial1;
+        while (stream->available()) {
+            char c = stream->read();
             Serial.write(c);
             lastActivity = millis();
             logbuffer_append(&logbuffer, c);
         }
 
-        if (millis() - lastActivity > 1000) {
+        if (millis() - lastActivity > LOGBUFFER_IDLE_DELAY) {
             logbuffer_flush(&logbuffer);
+            lastActivity = millis();
         }
 
         delay(10);
